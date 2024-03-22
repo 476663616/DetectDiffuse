@@ -1,10 +1,19 @@
-# ========================================
-# Modified by Shoufa Chen
-# ========================================
-# Modified by Peize Sun, Rufeng Zhang
-# Contact: {sunpeize, cxrfzhang}@foxmail.com
-#
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# -*- coding:utf-8 -*-
+###
+# File: /home/xinyul/python_exercises/3D_diffusuionDet/diffusiondet/detector copy.py
+# Project: /home/xinyul/python_exercises/3D_diffusuionDet/diffusiondet
+# Created Date: Tuesday, January 2nd 2024, 11:06:50 am
+# Author: Xinyu Li
+# Email: 3120235098@bit.edu.cn
+# -----
+# Last Modified: 2024-03-22 15:05:59
+# Modified By: Xinyu Li
+# -----
+# Copyright (c) 2024 Beijing Institude of Technology.
+# ------------------------------------
+# 请你获得幸福！！！
+###
+
 import math
 import random
 from typing import List
@@ -21,11 +30,11 @@ from detectron2.structures import Boxes, ImageList, Instances
 
 from .loss import SetCriterionDynamicK, HungarianMatcherDynamicK
 from .head import DynamicHead
-from .stenosis_head import Stenosis_DynamicHead
+from .lesion_head import Lesion_DynamicHead, Window_Layer
 from .util.box_ops import box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 from .util.misc import nested_tensor_from_tensor_list
 
-__all__ = ["DiffusionDet"]
+__all__ = ["LesionDiffusionDet"]
 
 ModelPrediction = namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
 
@@ -69,7 +78,7 @@ def random_num(size,end):
     return num_ls
 
 @META_ARCH_REGISTRY.register()
-class DiffusionDet(nn.Module):
+class LesionDiffusionDet(nn.Module):
     """
     Implement DiffusionDet
     """
@@ -114,13 +123,14 @@ class DiffusionDet(nn.Module):
         #### Added by Xinyu Li ####
         ###########################
         self.cfg = cfg
-        self.is_stenosis = False
-        self.is_lesion = False
-        self.uniform = cfg.MODEL.DiffusionDet.UNIFORM_NOISE
-        self.is_multi_image = cfg.MODEL.DiffusionDet.IS_MULTIIMG
+        self.is_lesion = cfg.MODEL.DiffusionDet.IS_LESION
         self.thr = cfg.MODEL.DiffusionDet.KEEP_THRESHOLD
         self.noise = cfg.MODEL.DiffusionDet.NOISE
-        self.use_experience_buffer = False
+        self.test_visual = False
+        self.naborhood_transformer = True
+        self.adaptive_window = cfg.MODEL.DiffusionDet.ADAPTIVE_WINDOW
+        if self.adaptive_window == True:
+            self.adapter = Window_Layer().cuda()
 
         self.register_buffer('betas', betas)
         self.register_buffer('alphas_cumprod', alphas_cumprod)
@@ -150,10 +160,10 @@ class DiffusionDet(nn.Module):
                              (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
 
         # Build Dynamic Head.
-        if not self.is_multi_image:
+        if not self.is_lesion:
             self.head = DynamicHead(cfg=cfg, roi_input_shape=self.backbone.output_shape())
         else:
-            self.head = Stenosis_DynamicHead(cfg=cfg, roi_input_shape=self.backbone.output_shape())
+            self.head = Lesion_DynamicHead(cfg=cfg, roi_input_shape=self.backbone.output_shape())
         # Loss parameters:
         class_weight = cfg.MODEL.DiffusionDet.CLASS_WEIGHT
         giou_weight = cfg.MODEL.DiffusionDet.GIOU_WEIGHT
@@ -192,12 +202,12 @@ class DiffusionDet(nn.Module):
                 extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
         )
 
-    def model_predictions(self, backbone_feats, images_whwh, x, t, x_self_cond=None, clip_x_start=False):
+    def model_predictions(self, backbone_feats, ref_feas, images_whwh, x, t, x_self_cond=None, clip_x_start=False):
         x_boxes = torch.clamp(x, min=-1 * self.scale, max=self.scale)
         x_boxes = ((x_boxes / self.scale) + 1) / 2
         x_boxes = box_cxcywh_to_xyxy(x_boxes)
         x_boxes = x_boxes * images_whwh[:, None, :]
-        outputs_class, outputs_coord = self.head(backbone_feats, x_boxes, t, None)
+        outputs_class, outputs_coord = self.head(backbone_feats, ref_feas, x_boxes, t, None)
 
         x_start = outputs_coord[-1]  # (batch, num_proposals, 4) predict boxes: absolute coordinates (x1, y1, x2, y2)
         x_start = x_start / images_whwh[:, None, :]
@@ -208,50 +218,6 @@ class DiffusionDet(nn.Module):
 
         return ModelPrediction(pred_noise, x_start), outputs_class, outputs_coord
     
-    def stenosis_model_predictions(self, backbone_feats, images_whwh, x, t, x_self_cond=None, clip_x_start=False):
-        x_boxes = torch.clamp(x, min=-1 * self.scale, max=self.scale)
-        x_boxes = ((x_boxes / self.scale) + 1) / 2
-        x_boxes = box_cxcywh_to_xyxy(x_boxes)
-        x_boxes = x_boxes * images_whwh[:, None, :]
-        outputs_class, outputs_coord = self.head(backbone_feats, x_boxes, t, None) #(B, n, 4)
-        if self.use_experience_buffer:
-            from .experience_buffer import Stenosis_Buffer
-            memory_buffer = Stenosis_Buffer(self.cfg)
-            for i in range(outputs_class.shape[0]):
-                memory_buffer.update_memory(i, backbone_feats, outputs_coord[i], outputs_class[i])
-            is_ref, _, excessive_idx = memory_buffer.filter_and_expand(thr = self.thr)
-            if is_ref:
-                if memory_buffer.expend_bboxes != []:
-                    ref_x_boxes = torch.stack(memory_buffer.expend_bboxes)
-                    ref_x_boxes = ref_x_boxes.view(1, ref_x_boxes.shape[0], ref_x_boxes.shape[1]).repeat(outputs_coord[-1].shape[0],1, 1)
-                    ref_outputs_class, ref_outputs_coord = self.head(backbone_feats, ref_x_boxes, t, None, is_ref)
-                    outputs_coord = torch.cat([outputs_coord, ref_outputs_coord], 2)
-                    outputs_class = torch.cat([outputs_class, ref_outputs_class], 2)
-                    x = torch.cat([x, ref_x_boxes], 1)
-                if memory_buffer.excessive_dict != []:
-                    ref_x_boxes = torch.stack(memory_buffer.excessive_dict)
-                    ref_x_boxes = ref_x_boxes.view(1, ref_x_boxes.shape[0], ref_x_boxes.shape[1]).repeat(outputs_coord[-1].shape[0],1, 1)
-                    ref_outputs_class, ref_outputs_coord = self.head(backbone_feats, ref_x_boxes, t, None, is_ref, excessive_idx)
-                    outputs_coord = torch.cat([outputs_coord, ref_outputs_coord], 2)
-                    outputs_class = torch.cat([outputs_class, ref_outputs_class], 2)
-                # ref_x_boxes = torch.stack(memory_buffer.expend_bboxes)
-                # ref_x_boxes = ref_x_boxes.view(1, ref_x_boxes.shape[0], ref_x_boxes.shape[1]).repeat(outputs_coord[-1].shape[0],1, 1)
-                # ref_outputs_class, ref_outputs_coord = self.head(backbone_feats, ref_x_boxes, t, None)
-                # outputs_coord = torch.cat([outputs_coord, ref_outputs_coord], 2)
-                # outputs_class = torch.cat([outputs_class, ref_outputs_class], 2)
-                    x = torch.cat([x, ref_x_boxes], 1)
-                self.num_proposals = x.shape[1]
-            
-
-        x_start = outputs_coord[-1]  # (batch, num_proposals, 4) predict boxes: absolute coordinates (x1, y1, x2, y2)
-        x_start = x_start / images_whwh[:, None, :]
-        x_start = box_xyxy_to_cxcywh(x_start)
-        x_start = (x_start * 2 - 1.) * self.scale
-        x_start = torch.clamp(x_start, min=-1 * self.scale, max=self.scale)
-        pred_noise = self.predict_noise_from_start(x, t, x_start)
-
-        return ModelPrediction(pred_noise, x_start), outputs_class, outputs_coord, x
-
     @torch.no_grad()
     def ddim_sample(self, batched_inputs, backbone_feats, images_whwh, images, clip_denoised=True, do_postprocess=True):
         batch = images_whwh.shape[0]
@@ -275,7 +241,7 @@ class DiffusionDet(nn.Module):
                                                                          self_cond, clip_x_start=clip_denoised)
             pred_noise, x_start = preds.pred_noise, preds.pred_x_start
 
-            if self.box_renewal:  # filter
+            if self.box_renewal:  # filterpip
                 score_per_image, box_per_image = outputs_class[-1][0], outputs_coord[-1][0]
                 threshold = 0.5
                 score_per_image = torch.sigmoid(score_per_image)
@@ -344,7 +310,7 @@ class DiffusionDet(nn.Module):
             return processed_results
 
     @torch.no_grad()
-    def lesion_sample(self, batched_inputs, backbone_feats, images_whwh, images, clip_denoised=True, do_postprocess=True):
+    def lesion_sample(self, batched_inputs, backbone_feats, ref_feas, images_whwh, images, clip_denoised=True, do_postprocess=True):
         batch = images_whwh.shape[0]
         shape = (batch, self.num_proposals, 4)
         total_timesteps, sampling_timesteps, eta, objective = self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
@@ -362,7 +328,7 @@ class DiffusionDet(nn.Module):
             time_cond = torch.full((batch,), time, device=self.device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
 
-            preds, outputs_class, outputs_coord = self.model_predictions(backbone_feats, images_whwh, img, time_cond,
+            preds, outputs_class, outputs_coord = self.model_predictions(backbone_feats, ref_feas, images_whwh, img, time_cond,
                                                                          self_cond, clip_x_start=clip_denoised)
             pred_noise, x_start = preds.pred_noise, preds.pred_x_start
 
@@ -473,7 +439,9 @@ class DiffusionDet(nn.Module):
                 * "height", "width" (int): the output resolution of the model, used in inference.
                   See :meth:`postprocess` for details.
         """
-        images, images_whwh = self.preprocess_image(batched_inputs)  #对图像进行预处理，包括对图像像素进行归一化，同时获取图像的尺寸信息
+        if self.test_visual:
+            self.test_visualization()
+        images, ref_images, images_whwh = self.preprocess_image(batched_inputs)  #对图像进行预处理，包括对图像像素进行归一化，同时获取图像的尺寸信息
         if isinstance(images, (list, torch.Tensor)):
             images = nested_tensor_from_tensor_list(images)
 
@@ -483,63 +451,43 @@ class DiffusionDet(nn.Module):
         for f in self.in_features: #将所需几个阶段的特征提取出来
             feature = src[f]
             features.append(feature)
+        
+        # Reference feature 组织格式为: 一个列表, 列表内部按照一个batch内所含的数据个数划分为若干子列表, 每个子列表包含由resnet50提取的不同层级的特征图, [b, c, w, h], b = 4 
 
-                    
-        # visualization = True
-        # if visualization:
-        #     from matplotlib import pyplot as plt
-        #     v = features[-1][0]
-        #     v = v.data.detach().cpu()
-        #     channel_num = random_num(25,v.shape[0])
-        #     plt.figure(figsize=(10, 10))
-        #     for index, channel in enumerate(channel_num):
-        #         ax = plt.subplot(5, 5, index+1,)
-        #         plt.imshow(v[channel, :, :])
-        #     plt.show()
-        #     print()
+        ref_feas = []
+        for ref in ref_images:
+            ref_fea = self.backbone(ref.tensor)
+            ref_fea_list = []
+            for f in self.in_features:
+                feature = ref_fea[f].transpose(1,0)
+                ref_fea_list.append(feature)
+            ref_feas.append(ref_fea_list)
+
+        new_feas = []
+        for j in range(len(self.in_features)):
+            sub_feas = []
+            for i in range(len(ref_feas)):
+                sub_feas.append(ref_feas[i][j])
+            new_feas.append(torch.stack(sub_feas))
+        del ref_feas
 
         # Prepare Proposals.
         if not self.training:
             if not self.is_lesion:
                 results = self.ddim_sample(batched_inputs, features, images_whwh, images)
             else:
-                results = self.stenosis_sample(batched_inputs, features, images_whwh, images)
+                results = self.lesion_sample(batched_inputs, features, new_feas, images_whwh, images)
             return results
 
         if self.training:
             gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
             targets, x_boxes, noises, t = self.prepare_targets(gt_instances) #根据金标准生成对应的噪声框
 
-            #####This is added by myself, to uniform the noise of a squence#####
-            if self.uniform:
-                x_boxes, noises, t = self.uniform_noise(x_boxes, noises, t)
-
             t = t.squeeze(-1)
             x_boxes = x_boxes * images_whwh[:, None, :] #将归一化后的噪声金标准框复原
 
-            outputs_class, outputs_coord = self.head(features, x_boxes, t, None) #检测头，输入特征与噪声框，输出框的分类以及坐标featurs:[9, 256, x, x] *4, x_boxes:[9, 500, 4] output: [6, 9, 500, 4], 因为有6个检测头，所以输出的第一维是6
-            if self.use_experience_buffer:
-                from .experience_buffer import Stenosis_Buffer
-                memory_buffer = Stenosis_Buffer(self.cfg)
-                for i in range(outputs_class.shape[0]):
-                    memory_buffer.update_memory(i, features, outputs_coord[i], outputs_class[i])
-                is_ref, num_loss, excessive_idx = memory_buffer.filter_and_expand(thr = self.thr)
-                if is_ref:
-                    if memory_buffer.expend_bboxes != []:
-                        ref_x_boxes = torch.stack(memory_buffer.expend_bboxes)
-                        ref_x_boxes = ref_x_boxes.view(1, ref_x_boxes.shape[0], ref_x_boxes.shape[1]).repeat(outputs_coord[-1].shape[0],1, 1)
-                        ref_outputs_class, ref_outputs_coord = self.head(features, ref_x_boxes, t, None, is_ref)
-                        outputs_coord = torch.cat([outputs_coord, ref_outputs_coord], 2)
-                        outputs_class = torch.cat([outputs_class, ref_outputs_class], 2)
-                    if memory_buffer.excessive_dict != []:
-                        ref_x_boxes = torch.stack(memory_buffer.excessive_dict)
-                        ref_x_boxes = ref_x_boxes.view(1, ref_x_boxes.shape[0], ref_x_boxes.shape[1]).repeat(outputs_coord[-1].shape[0],1, 1)
-                        ref_outputs_class, ref_outputs_coord = self.head(features, ref_x_boxes, t, None, is_ref, excessive_idx)
-                        outputs_coord = torch.cat([outputs_coord, ref_outputs_coord], 2)
-                        outputs_class = torch.cat([outputs_class, ref_outputs_class], 2)
+            outputs_class, outputs_coord = self.head(features, new_feas, x_boxes, t, None) #检测头，输入特征与噪声框，输出框的分类以及坐标featurs:[9, 256, x, x] *4, x_boxes:[9, 500, 4] output: [6, 9, 500, 4], 因为有6个检测头，所以输出的第一维是6
 
-
-            
             output = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
 
             if self.deep_supervision: 
@@ -548,9 +496,6 @@ class DiffusionDet(nn.Module):
 
             loss_dict = self.criterion(output, targets)
             weight_dict = self.criterion.weight_dict
-            if self.use_experience_buffer:
-                loss_dict['num_loss'] = num_loss
-                weight_dict['num_loss'] = 2.0
             for k in loss_dict.keys():
                 if k in weight_dict:
                     loss_dict[k] *= weight_dict[k]
@@ -777,7 +722,21 @@ class DiffusionDet(nn.Module):
         Normalize, pad and batch the input images.
         """
         images = [self.normalizer(x["image"].to(self.device)) for x in batched_inputs]
+        ref_images = [[self.normalizer(ref_img.to(self.device)) for ref_img in x['ref_image'][0]] for x in batched_inputs]
+
+        images_tensor = torch.stack(images)
+        
+        # n_window = self.adapter(images_tensor)
+        # r_window = []
+        # for batch in ref_images:
+        #     sub_window = [self.adapter(x.unsqueeze(0)) for x in batch]
+        #     r_window.append(sub_window)
+
+            
+        # batch_num = len(batched_inputs)
+        # ref_nums = [len(x['ref_image']) for x in batched_inputs]
         images = ImageList.from_tensors(images, self.size_divisibility)
+        ref_images = [ImageList.from_tensors(x, self.size_divisibility) for x in ref_images]
 
         images_whwh = list()
         for bi in batched_inputs:
@@ -785,4 +744,30 @@ class DiffusionDet(nn.Module):
             images_whwh.append(torch.tensor([w, h, w, h], dtype=torch.float32, device=self.device))
         images_whwh = torch.stack(images_whwh)
 
-        return images, images_whwh
+        return images, ref_images, images_whwh
+    
+    def test_visualization(self):
+        import cv2
+        import numpy as np
+        import os
+        from matplotlib import pyplot as plt
+        test_img_path = './test_img/'
+        test_img = [cv2.imread(test_img_path+img).transpose(2,0,1) for img in os.listdir(test_img_path) if 'png' in img]
+        test_img = torch.tensor(np.array(test_img)).float().to(self.device)
+        src = self.backbone(test_img)  #backbone,特征提取 [B, C, W, H]: [9, 3, 512, 512] --> [9, 256, 128, 128] --> [9, 256, 64, 64, 64] --> [9, 256, 32, 32, 32] --> [9, 256, 16, 16, 16] --> [9, 256, 8, 8, 8] 对应p1, p2, p3, p4, p5, p6
+        features = list()
+        for f in self.in_features: #将所需几个阶段的特征提取出来
+            feature = src[f]
+            features.append(feature)
+        v = features[0][0]
+        v = v.data.detach().cpu()
+        channel_num = 0
+        plt.figure(figsize=(16, 16))
+        plt.imshow(v[channel_num, :, :])
+        channel_num = random_num(9,v.shape[0])
+        plt.figure(figsize=(16, 16))
+        for index, channel in enumerate(channel_num):
+            ax = plt.subplot(3, 3, index+1,)
+            plt.imshow(v[channel, :, :])
+        plt.show()
+        print()

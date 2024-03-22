@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2023-12-20 21:46:36
+# Last Modified: 2024-01-18 18:07:19
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
@@ -47,9 +47,16 @@ from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.modeling import build_model
 
 from diffusiondet import DiffusionDetDatasetMapper, add_diffusiondet_config, DiffusionDetWithTTA
-from diffusiondet.util.lesion_util import build_batch_lesion_loader, build_lesion_train_loader, MapLesionDataset, LesionDatasetMapper
+from diffusiondet.util.lesion_util import build_batch_lesion_loader, build_lesion_train_loader, MapLesionDataset, LesionDatasetMapper, build_lesion_test_loader
 from diffusiondet.util.model_ema import add_model_ema_configs, may_build_model_ema, may_get_ema_checkpointer, EMAHook, \
     apply_model_ema_and_restore, EMADetectionCheckpointer
+
+from detectron2.evaluation import (
+    DatasetEvaluator,
+    inference_on_dataset,
+    print_csv_format,
+    verify_results,
+)
 
 
 class Trainer(DefaultTrainer):
@@ -337,6 +344,11 @@ class Lesion_trainer(DefaultTrainer):
     def build_lesion_train_loader(cls, cfg):
         mapper = LesionDatasetMapper(cfg, is_train=True)
         return build_lesion_train_loader(cfg, mapper=mapper)
+    
+    @classmethod
+    def build_lesion_test_loader(cls, cfg, dataset_name):
+        mapper = LesionDatasetMapper(cfg, is_train=False)
+        return build_lesion_test_loader(cfg, dataset_name, mapper=mapper)
 
     @classmethod
     def build_optimizer(cls, cfg, model):
@@ -453,7 +465,7 @@ class Lesion_trainer(DefaultTrainer):
             ret.append(hooks.PeriodicCheckpointer(self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD))
 
         def test_and_save_results():
-            self._last_eval_results = self.test(self.cfg, self.model)
+            self._last_eval_results = self.lesion_test(self.cfg, self.model)
             return self._last_eval_results
 
         # Do evaluation after checkpointer, because then if it fails,
@@ -465,6 +477,61 @@ class Lesion_trainer(DefaultTrainer):
             # run writers in the end, so that evaluation metrics are written
             ret.append(hooks.PeriodicWriter(self.build_writers(), period=20))
         return ret
+    @classmethod    
+    def lesion_test(cls, cfg, model, evaluators=None):
+        """
+        Evaluate the given model. The given model is expected to already contain
+        weights to evaluate.
+
+        Args:
+            cfg (CfgNode):
+            model (nn.Module):
+            evaluators (list[DatasetEvaluator] or None): if None, will call
+                :meth:`build_evaluator`. Otherwise, must have the same length as
+                ``cfg.DATASETS.TEST``.
+
+        Returns:
+            dict: a dict of result metrics
+        """
+        logger = logging.getLogger(__name__)
+        if isinstance(evaluators, DatasetEvaluator):
+            evaluators = [evaluators]
+        if evaluators is not None:
+            assert len(cfg.DATASETS.TEST) == len(evaluators), "{} != {}".format(
+                len(cfg.DATASETS.TEST), len(evaluators)
+            )
+
+        results = OrderedDict()
+        for idx, dataset_name in enumerate(cfg.DATASETS.TEST):
+            data_loader = cls.build_lesion_test_loader(cfg, dataset_name)
+            # When evaluators are passed in as arguments,
+            # implicitly assume that evaluators can be created before data_loader.
+            if evaluators is not None:
+                evaluator = evaluators[idx]
+            else:
+                try:
+                    evaluator = cls.build_evaluator(cfg, dataset_name)
+                except NotImplementedError:
+                    logger.warn(
+                        "No evaluator found. Use `DefaultTrainer.test(evaluators=)`, "
+                        "or implement its `build_evaluator` method."
+                    )
+                    results[dataset_name] = {}
+                    continue
+            results_i = inference_on_dataset(model, data_loader, evaluator)
+            results[dataset_name] = results_i
+            if comm.is_main_process():
+                assert isinstance(
+                    results_i, dict
+                ), "Evaluator must return a dict on the main process. Got {} instead.".format(
+                    results_i
+                )
+                logger.info("Evaluation results for {} in csv format:".format(dataset_name))
+                print_csv_format(results_i)
+
+        if len(results) == 1:
+            results = list(results.values())[0]
+        return results
     
 def setup(args):
     """
@@ -484,7 +551,7 @@ def main(args):
     cfg = setup(args)
 
     if args.eval_only:
-        if not cfg.IS_LESION:
+        if not cfg.MODEL.DiffusionDet.IS_LESION:
             model = Trainer.build_model(cfg)
         else:
             model = Lesion_trainer.build_model(cfg)
@@ -495,7 +562,7 @@ def main(args):
         else:
             DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR, **kwargs).resume_or_load(cfg.MODEL.WEIGHTS,
                                                                                            resume=args.resume)
-        if not cfg.IS_LESION:
+        if not cfg.MODEL.DiffusionDet.IS_LESION:
             res = Trainer.ema_test(cfg, model)
             if cfg.TEST.AUG.ENABLED:
                 res.update(Trainer.test_with_TTA(cfg, model))
@@ -506,7 +573,7 @@ def main(args):
         if comm.is_main_process():
             verify_results(cfg, res)
         return res
-    if cfg.IS_LESION:
+    if cfg.MODEL.DiffusionDet.IS_LESION:
         trainer = Lesion_trainer(cfg)
         trainer.resume_or_load(resume=args.resume) 
     else:

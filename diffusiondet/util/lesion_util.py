@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2023-12-20 09:08:41
+# Last Modified: 2024-03-19 09:05:43
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
@@ -15,6 +15,7 @@
 ###
 
 import logging
+import os
 import numpy as np
 import operator
 import copy
@@ -223,7 +224,7 @@ def build_lesion_test_loader(
     if isinstance(dataset, list):
         dataset = DatasetFromList(dataset, copy=False)
     if mapper is not None:
-        dataset = MapLesionDataset(dataset, mapper)
+        dataset = MapLesionTestDataset(dataset, mapper)
     if isinstance(dataset, torchdata.IterableDataset):
         assert sampler is None, "sampler must be None if dataset is IterableDataset"
     else:
@@ -404,11 +405,11 @@ class AspectRatioGroupedLesionDataset(data.IterableDataset):
     def __iter__(self):
         for d in self.dataset:
             # for sub_data in d:
-            w, h = 512, 512
+            w, h = d['width'], d['height']
             bucket_id = 0 if w > h else 1
             bucket = self._buckets[bucket_id]
-            bucket+=d
-            if len(bucket) == self.batch_size*len(d):
+            bucket.append(d)
+            if len(bucket) == self.batch_size:
                 data = bucket[:]
                 # Clear bucket first, because code after yield is not
                 # guaranteed to execute
@@ -449,26 +450,14 @@ class MapLesionDataset(data.Dataset):
         return self._dataset, self._map_func
 
     def __len__(self):
-        return int(len(self._dataset)/9)
+        return len(self._dataset)
 
     def __getitem__(self, idx):
         retry_count = 0
-        # if idx%9<=2: #一个序列放五张图像
-            # cur_idx = int(idx//9*9+2)
-        # elif idx%9>=6:
-        #     cur_idx = int(idx//9*9+6)
-        # if idx%9<=3: #一个序列放七张图像
-        #     cur_idx = int(idx//9*9+3)
-        # elif idx%9>=5:
-        #     cur_idx = int(idx//9*9+5)
-        # else:
-            # cur_idx = int(idx)
-        cur_idx = int(idx) #一个序列放七张图像
+        cur_idx = int(idx)
 
         while True:
-            # data  = [self._map_func(self._dataset[i]) for i in range(cur_idx-2, cur_idx+3)] #一个序列放五张图像
-            # data  = [self._map_func(self._dataset[i]) for i in range(cur_idx-3, cur_idx+4)] #一个序列放七张图像
-            data  = [self._map_func(self._dataset[i]) for i in range(cur_idx*9, (cur_idx+1)*9)] #一个序列放九张图像
+            data = self._map_func(self._dataset[cur_idx])
             # data = self._map_func(self._dataset[cur_idx])
             if data is not None:
                 self._fallback_candidates.add(cur_idx)
@@ -521,25 +510,14 @@ class MapLesionTestDataset(data.Dataset):
         return self._dataset, self._map_func
 
     def __len__(self):
-        return int(len(self._dataset)/9)
+        return len(self._dataset)
 
     def __getitem__(self, idx):
         retry_count = 0
-        # if idx%9<=2:
-        if idx%9<=3:
-            # cur_idx = int(idx//9*9+2)
-            cur_idx = int(idx//9*9+3)
-        # elif idx%9>=6:
-        #     cur_idx = int(idx//9*9+6)
-        elif idx%9>=5:
-            cur_idx = int(idx//9*9+5)
-        else:
-            cur_idx = int(idx)
+        cur_idx = int(idx)
 
         while True:
-            # data  = [self._map_func(self._dataset[i]) for i in range(cur_idx-2, cur_idx+3)]
-            data  = [self._map_func(self._dataset[i]) for i in range(cur_idx-3, cur_idx+4)]
-            # data  = [self._map_func(self._dataset[i]) for i in range(cur_idx//9*9, (cur_idx//9+1)*9)]
+            data = self._map_func(self._dataset[cur_idx])
             # data = self._map_func(self._dataset[cur_idx])
             if data is not None:
                 self._fallback_candidates.add(cur_idx)
@@ -598,6 +576,30 @@ class LesionDatasetMapper:
         """
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
         image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
+        img_name = dataset_dict['file_name']
+        file_name = img_name.split('/')[-1]
+        img_forhead = file_name.replace(file_name.split('_')[-1], '')
+        img_path = img_name.replace(file_name,'')
+        all_img = [img for img in os.listdir(img_path) if img_forhead in img]
+        all_img = sorted(all_img, key=lambda x: int(x.split('_')[-1].split('.')[0]))
+        cur_img_idx = all_img.index(file_name)
+        # print(cur_img_idx-2, cur_img_idx+3, len(all_img))
+        # try:
+        #TODO:改为自适应的程序
+        if len(all_img) >= 5:
+            if cur_img_idx >= 2 and cur_img_idx <= len(all_img) - 3:
+                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(cur_img_idx-2, cur_img_idx+3) if i != cur_img_idx]
+            elif cur_img_idx <2:
+                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, 5) if i != cur_img_idx]
+            else:
+                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(len(all_img)-5, len(all_img)) if i != cur_img_idx]
+        else:
+            ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, len(all_img)) if i != cur_img_idx]
+        # except:
+        #     print()
+        if len(ref_img) != 4:
+            for i in range(0, 4-len(ref_img)):
+                ref_img.append(image)
         utils.check_image_size(dataset_dict, image)
 
         if self.crop_gen is None:
@@ -611,11 +613,14 @@ class LesionDatasetMapper:
                 )
 
         image_shape = image.shape[:2]  # h, w
-
+        ref_img = self.align_image_size(image.shape, ref_img)
         # Pytorch's dataloader is efficient on torch.Tensor due to shared-memory,
         # but not efficient on large generic data structures due to the use of pickle & mp.Queue.
         # Therefore it's important to use torch.Tensor.
         dataset_dict["image"] = torch.as_tensor(np.ascontiguousarray(np.array(image).transpose(2, 0, 1)))
+
+        ref_images = [torch.as_tensor(np.ascontiguousarray(np.array(ref_image).transpose(2, 0, 1))) for ref_image in ref_img]
+        dataset_dict["ref_image"] = torch.stack(ref_images).transpose(1,0)
         # dataset_dict["image"] = torch.from_numpy(np.ascontiguousarray(np.array(image).transpose(2, 0, 1)))
 
         if not self.is_train:
@@ -639,3 +644,12 @@ class LesionDatasetMapper:
             dataset_dict["instances"] = utils.filter_empty_instances(instances)
         return dataset_dict
     
+    def align_image_size(self, image_size, ref_img):
+        if ref_img[0].shape != image_size:
+            new_ref = []
+            for ref in ref_img:
+                ref = np.resize(ref, image_size)
+                new_ref.append(ref)
+            return new_ref
+        else:
+            return ref_img

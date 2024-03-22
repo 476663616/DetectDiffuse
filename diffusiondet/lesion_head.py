@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2023-12-04 15:43:54
+# Last Modified: 2024-03-21 22:02:48
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
@@ -70,7 +70,7 @@ class Dense(nn.Module):
         return self.dense(x)
     
 
-class Stenosis_DynamicHead(nn.Module):
+class Lesion_DynamicHead(nn.Module):
 
     def __init__(self, cfg, roi_input_shape):
         super().__init__()
@@ -145,7 +145,7 @@ class Stenosis_DynamicHead(nn.Module):
         )
         return box_pooler
 
-    def forward(self, features, init_bboxes, t, init_features, is_ref = False, cross_feature = None):
+    def forward(self, features, ref_feas, init_bboxes, t, init_features, is_ref = False, cross_feature = None):
         # assert t shape (batch_size)
         time = self.time_mlp(t) # 先使用全连接层对时间步长进行采样，得到可学习的时间步参数
 
@@ -163,7 +163,7 @@ class Stenosis_DynamicHead(nn.Module):
             proposal_features = None
         
         for head_idx, rcnn_head in enumerate(self.head_series):
-            class_logits, pred_bboxes, proposal_features = rcnn_head(features, bboxes, proposal_features, self.box_pooler, time, is_ref, cross_feature)
+            class_logits, pred_bboxes, proposal_features = rcnn_head(features, ref_feas, bboxes, proposal_features, self.box_pooler, time, is_ref, cross_feature)
             if self.return_intermediate:
                 inter_class_logits.append(class_logits)
                 inter_pred_bboxes.append(pred_bboxes)
@@ -188,6 +188,9 @@ class MultiImg_RCNNHead(nn.Module):
         self.multi_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.box_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.inst_interact = DynamicConv(cfg)
+
+        self.pre_fusion = GALayer(cfg)
+        self.layer_attention = ELA_Layer(cfg)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -236,7 +239,7 @@ class MultiImg_RCNNHead(nn.Module):
         self.scale_clamp = scale_clamp
         self.bbox_weights = bbox_weights
 
-    def forward(self, features, bboxes, pro_features, pooler, time_emb, is_ref, cross_feature):
+    def forward(self, features, ref_feas, bboxes, pro_features, pooler, time_emb, is_ref, cross_feature):
         """
         :param bboxes: (N, nr_boxes, 4)
         :param pro_features: (N, nr_boxes, d_model)
@@ -244,7 +247,8 @@ class MultiImg_RCNNHead(nn.Module):
 
         N, nr_boxes = bboxes.shape[:2] # N: batch_size or number of input images; nr_boxes: number of rotated boxes;
 
-        features = self.feature_fusion(features)
+        features, ref_feas = self.feature_fusion(features, ref_feas)
+        _, C, D, H, W = ref_feas[0].shape
                     
         
         # roi_feature.
@@ -255,6 +259,14 @@ class MultiImg_RCNNHead(nn.Module):
         # input: feature maps list witch shapes are [B, C, W, H] and split boxes ilst which shapes are [N, 4]
         # output: A tensor of shape (M, C, output_size, output_size) where M is the total number of boxes aggregated over all N batch images.
         roi_features = pooler(features, proposal_boxes) #[500*9, C, 7, 7]
+        roi_refs = []
+        for i in range(D):
+            sub_rois = []
+            for ref in ref_feas:
+                sub_rois.append(ref[:,:,i])
+            roi_refs.append(pooler(sub_rois, proposal_boxes)) #[500*9, C, 7, 7]
+        
+        roi_features = self.ela_enhanced(roi_features, roi_refs)
 
         if pro_features is None:
             pro_features = roi_features.view(N, nr_boxes, self.d_model, -1).mean(-1) #[500*9, C, 7, 7] --> [9, 500, 256, 49] --> [9, 500, 256]
@@ -366,52 +378,59 @@ class MultiImg_RCNNHead(nn.Module):
 
 
     
-    def feature_fusion(self, features):
-        # multi head attention between the feature maps 1-2-3, now I try to enhance the feature by use 3 pictures
+    def feature_fusion(self, features, ref_feas):
+        # multi head attention between the feature maps 1-2-3-4-5, now I try to enhance the feature by use 3 pictures
 
         # for feature_layer in features:
-        temp_feature = features[-1]
-        b, c, h, w = temp_feature.shape
+        b, c, h, w = features[-1].shape
+        #首先把图像按照batch分开, 并与参考帧特征进行合并
+        new_batchs = []
+        for batch in range(b):
+            now_batch = []
+            for i in range(len(features)):
+                now_feature = features[i][batch].unsqueeze(0).transpose(1,0) #[256, 1, x, x]
+                ref_feature = ref_feas[i][batch] #[256, 4, x, x]
+                now_batch.append(torch.cat([now_feature, ref_feature],dim=1))
+            new_batchs.append(now_batch)
         
-        new_feature_layer = []
-        for i in range(b):
-            if i == 0:
-                now_feature = temp_feature[i].view(1, c, h*w).permute(1, 0, 2)
-                before_feature = temp_feature[i+1].view(1, c, h*w).permute(1, 0, 2)
-                next_feature = temp_feature[i+2].view(1, c, h*w).permute(1, 0, 2)
-            elif i == b-1:
-                now_feature = temp_feature[i].view(1, c, h*w).permute(1, 0, 2)
-                before_feature = temp_feature[i-1].view(1, c, h*w).permute(1, 0, 2)
-                next_feature = temp_feature[i-2].view(1, c, h*w).permute(1, 0, 2)
-            else:
-                now_feature = temp_feature[i].view(1, c, h*w).permute(1, 0, 2)
-                before_feature = temp_feature[i-1].view(1, c, h*w).permute(1, 0, 2)
-                next_feature = temp_feature[i+1].view(1, c, h*w).permute(1, 0, 2)
-            '''
-            Args:
-                query: Query embeddings of shape :math:`(L, E_q)` for unbatched input, :math:`(L, N, E_q)` when ``batch_first=False``
-                    or :math:`(N, L, E_q)` when ``batch_first=True``, where :math:`L` is the target sequence length,
-                    :math:`N` is the batch size, and :math:`E_q` is the query embedding dimension ``embed_dim``.
-                    Queries are compared against key-value pairs to produce the output.
-                    See "Attention Is All You Need" for more details.
-                key: Key embeddings of shape :math:`(S, E_k)` for unbatched input, :math:`(S, N, E_k)` when ``batch_first=False``
-                    or :math:`(N, S, E_k)` when ``batch_first=True``, where :math:`S` is the source sequence length,
-                    :math:`N` is the batch size, and :math:`E_k` is the key embedding dimension ``kdim``.
-                    See "Attention Is All You Need" for more details.
-                value: Value embeddings of shape :math:`(S, E_v)` for unbatched input, :math:`(S, N, E_v)` when
-                    ``batch_first=False`` or :math:`(N, S, E_v)` when ``batch_first=True``, where :math:`S` is the source
-                    sequence length, :math:`N` is the batch size, and :math:`E_v` is the value embedding dimension ``vdim``.
-                    See "Attention Is All You Need" for more details.
-            '''
-            pro_feature1 = self.multi_attn(now_feature, before_feature, now_feature)[0]
-            pro_feature2 = self.multi_attn(now_feature, next_feature, now_feature)[0]
-            now_feature = now_feature + self.dropout_mha(pro_feature1) + self.dropout_mha(pro_feature2)
-            now_feature = rearrange(now_feature, 'c b (h w) -> (c b) h w', h=h)
-            new_feature_layer.append(now_feature)
+        #进行特征注意力计算
+        att_batchs = []
+        for batch in new_batchs:
+            att_batch = []
+            for layer in batch:
+                B, C, H, W = layer.shape
+                att_batch.append(self.pre_fusion(layer.view(B*C, H, W)).view(B, C, H, W))
+            att_batchs.append(att_batch)
+        
+        #最后再把这些还原
+        features = []
+        ref_feas = []
+        for att_batch in att_batchs:
+            sub_fea = []
+            sub_ref = []
+            for layer in att_batch:                
+                sub_fea.append(layer[:,0])
+                sub_ref.append(layer[:,1:])
+            features.append(sub_fea)
+            ref_feas.append(sub_ref)
+        new_feature, new_ref = [], []
+        if len(ref_feas) > 1:
+            for i in range(len(features[0])):
+                cat_feature = []
+                cat_ref = []
+                for j in range(len(ref_feas)):
+                    cat_feature.append(features[j][i])
+                    cat_ref.append(ref_feas[j][i])
+                new_feature.append(torch.stack(cat_feature).squeeze())
+                new_ref.append(torch.stack(cat_ref).squeeze())
+        else:
+            new_feature = features[0]
+            new_ref = ref_feas[0]
+            for i in range(len(new_feature)):
+                new_feature[i] = new_feature[i].unsqueeze(0)
+                new_ref[i] = new_ref[i].unsqueeze(0)
 
-        new_feature_layer = torch.stack(new_feature_layer)
-        features[-1] = new_feature_layer
-        return features
+        return new_feature, new_ref
 
                     
     def apply_deltas(self, deltas, boxes):
@@ -453,6 +472,17 @@ class MultiImg_RCNNHead(nn.Module):
         pred_boxes[:, 3::4] = pred_ctr_y + 0.5 * pred_h  # y2
 
         return pred_boxes
+    
+    def ela_enhanced(self, ori, refs):
+        '''
+        拼接并增强信息, 最终融合.
+        '''
+        refs =torch.stack(refs)
+        all_rois = torch.cat([ori.unsqueeze(0), refs]).permute(1,2,0,3,4)
+        enhanced_rois = self.layer_attention(all_rois).permute(2,0,1,3,4)
+        return enhanced_rois[0]
+
+    
 
 
 class DynamicConv(nn.Module):
@@ -501,6 +531,33 @@ class DynamicConv(nn.Module):
         features = self.activation(features)
 
         return features
+    
+class GALayer(nn.Module):
+    '''
+    This is the global attention module which inspared by the FFA-net
+    It contains a average pooling, a channel attention and a pixel attention.
+    '''
+    def __init__(self, cfg):
+        super(GALayer, self).__init__()
+        self.channel = (cfg.MODEL.DiffusionDet.REF_NUM + 1) *256
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.ca = nn.Sequential(
+                nn.Conv2d(self.channel, self.channel // 8, 1, padding=0, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(self.channel // 8, self.channel, 1, padding=0, bias=True),
+                nn.Sigmoid()
+        )
+        self.pa = nn.Sequential(
+                nn.Conv2d(self.channel, self.channel // 8, 1, padding=0, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(self.channel // 8, 1, 1, padding=0, bias=True),
+                nn.Sigmoid()
+        )
+    def forward(self, x):
+        x1 = self.avg_pool(x)
+        x1 = x1 * self.ca(x1)
+        x1 = x1 * self.pa(x1)
+        return x + x1
 
 
 def _get_clones(module, N):
@@ -516,3 +573,118 @@ def _get_activation_fn(activation):
     if activation == "glu":
         return F.glu
     raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
+
+
+class h_sigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_sigmoid, self).__init__()
+        self.relu = nn.ReLU6(inplace=inplace)
+ 
+    def forward(self, x):
+        return self.relu(x + 3) / 6
+ 
+class h_swish(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_swish, self).__init__()
+        self.sigmoid = h_sigmoid(inplace=inplace)
+ 
+    def forward(self, x):
+        return x * self.sigmoid(x)
+
+class ELA_Layer(nn.Module):
+    '''
+    This is the Efficient Local Attention, 
+    '''
+    def __init__(self, cfg, reduction=32, kernel_size=3):
+        super(ELA_Layer, self).__init__()
+        in_ch = cfg.MODEL.DiffusionDet.IN_CH
+        out_ch = cfg.MODEL.DiffusionDet.OUT_CH
+        self.pool_d = nn.AdaptiveAvgPool3d((1, None, None))
+        self.pool_h = nn.AdaptiveAvgPool3d((None, 1, None))
+        self.pool_w = nn.AdaptiveAvgPool3d((None, None, 1))
+        pad = kernel_size // 2
+        self.conv_w = nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, padding=pad, groups=in_ch, bias=False)
+        self.conv_h = nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, padding=pad, groups=in_ch, bias=False)
+        self.conv_d = nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, padding=pad, groups=in_ch, bias=False)
+        self.GN = nn.GroupNorm(reduction, in_ch)
+        self.act = h_swish()
+    
+    def forward(self, x):
+        b,c,d,h,w = x.shape
+        identity = x
+
+        x_w = self.pool_w(x).view(b,c,d,h)
+        x_h = self.pool_h(x).view(b,c,d,w)
+        x_d = self.pool_d(x).view(b,c,h,w)
+
+        x_w = self.conv_w(x_w)
+        x_h = self.conv_h(x_h)
+        x_d = self.conv_d(x_d)
+
+        x_w = self.GN(x_w)
+        x_h = self.GN(x_h)
+        x_d = self.GN(x_d)
+
+        x_w = self.act(x_w).view(b,c,d,h,1)
+        x_h = self.act(x_h).view(b,c,d,1,w)
+        x_d = self.act(x_d).view(b,c,1,h,w)
+
+        x = identity * x_w * x_d * x_h
+        return x
+
+class con_block(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size):
+        super(con_block, self).__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, stride=1, padding=1),
+            nn.BatchNorm2d(out_ch),
+            # nn.ReLU(inplace=True),
+            # nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1),
+            # nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True))
+    def forward(self, x):
+        x = self.conv(x)
+        return x    
+
+class Window_Layer(nn.Module):
+    def __init__(self, img_ch=3, out_ch=2):
+        super(Window_Layer, self).__init__()
+        n1 = 32
+        filters = [n1, n1 * 2, n1 * 4, n1 * 8]
+        self.conv1 = con_block(img_ch, filters[0], 3)
+        self.conv2 = con_block(filters[0], filters[0], 3)
+        self.conv3 = con_block(filters[0], filters[1], 3)
+        self.conv4 = con_block(filters[1], filters[1], 3)
+        self.fc1 = nn.Linear(filters[3]*2, filters[2])
+        self.fc2 = nn.Linear(filters[2], filters[0])
+        self.fc3 = nn.Linear(filters[0], out_ch)
+        self.Maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.Maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.Maxpool3 = nn.MaxPool2d(kernel_size=2, stride=4)
+        self.Maxpool4 = nn.MaxPool2d(kernel_size=2, stride=4)
+        self.conv5 = con_block(filters[1], filters[2], 3)
+        self.Maxpool5 = nn.MaxPool2d(kernel_size=3, stride=4)
+
+    def forward(self,x):
+        x = self.conv1(x)
+
+        x = self.Maxpool1(x)
+        x = self.conv2(x)
+
+        x = self.Maxpool2(x)
+        x = self.conv3(x)
+
+        x = self.Maxpool3(x)
+        x = self.conv4(x)
+
+        x = self.Maxpool4(x)
+        x = self.conv5(x)
+
+        x = self.Maxpool5(x)
+
+        b,c,h,w = x.shape
+        x = self.fc1(x.view(b,c*h*w))
+        x = self.fc2(x)
+        x = self.fc3(x)
+        return x

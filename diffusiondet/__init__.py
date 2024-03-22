@@ -10,3 +10,4 @@ from .detector import DiffusionDet
 from .dataset_mapper import DiffusionDetDatasetMapper, StenosisDatasetMapper
 from .test_time_augmentation import DiffusionDetWithTTA
 from .swintransformer import build_swintransformer_fpn_backbone
+from .lesion_detector import LesionDiffusionDet

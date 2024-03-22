@@ -19,12 +19,14 @@ def add_diffusiondet_config(cfg):
     ###########################
     #### Added by Xinyu Li ####
     ###########################
-    cfg.IS_LESION = False
-    cfg.MODEL.DiffusionDet.ISLESION = False
-    cfg.MODEL.DiffusionDet.UNIFORM_NOISE = False
+    cfg.MODEL.DiffusionDet.IS_LESION = False
     cfg.MODEL.DiffusionDet.KEEP_THRESHOLD = 0.5
+    cfg.MODEL.DiffusionDet.REF_NUM = 0
     cfg.MODEL.DiffusionDet.IS_MULTIIMG = False
     cfg.MODEL.DiffusionDet.NOISE = 'normal'  #'poisson', 'normal'
+    cfg.MODEL.DiffusionDet.IN_CH = 256
+    cfg.MODEL.DiffusionDet.OUT_CH = 256
+    cfg.MODEL.DiffusionDet.ADAPTIVE_WINDOW = False
 
     # RCNN Head.
     cfg.MODEL.DiffusionDet.NHEADS = 8
