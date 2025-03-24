@@ -23,6 +23,7 @@ wheels/
 *.pth
 *.pkl
 *.npy
+*.tar
 
 # ipython/jupyter notebooks
 *.ipynb

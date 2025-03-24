@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2024-03-22 15:05:59
+# Last Modified: 2024-05-05 18:03:18
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2024 Beijing Institude of Technology.
@@ -130,7 +130,8 @@ class LesionDiffusionDet(nn.Module):
         self.naborhood_transformer = True
         self.adaptive_window = cfg.MODEL.DiffusionDet.ADAPTIVE_WINDOW
         if self.adaptive_window == True:
-            self.adapter = Window_Layer().cuda()
+            self.adapter = Window_Layer(3, 3).cuda()
+            self.windows = cfg.MODEL.DiffusionDet.WINDOWS
 
         self.register_buffer('betas', betas)
         self.register_buffer('alphas_cumprod', alphas_cumprod)
@@ -194,6 +195,7 @@ class LesionDiffusionDet(nn.Module):
         pixel_mean = torch.Tensor(cfg.MODEL.PIXEL_MEAN).to(self.device).view(3, 1, 1)
         pixel_std = torch.Tensor(cfg.MODEL.PIXEL_STD).to(self.device).view(3, 1, 1)
         self.normalizer = lambda x: (x - pixel_mean) / pixel_std
+        self.antinormalizer = lambda x: x * pixel_std + pixel_mean
         self.to(self.device)
 
     def predict_noise_from_start(self, x_t, t, x0):
@@ -716,6 +718,7 @@ class LesionDiffusionDet(nn.Module):
             results.append(result)
 
         return results
+    
 
     def preprocess_image(self, batched_inputs):
         """
@@ -723,18 +726,25 @@ class LesionDiffusionDet(nn.Module):
         """
         images = [self.normalizer(x["image"].to(self.device)) for x in batched_inputs]
         ref_images = [[self.normalizer(ref_img.to(self.device)) for ref_img in x['ref_image'][0]] for x in batched_inputs]
+        # self.visualization(images)
 
-        images_tensor = torch.stack(images)
-        
-        # n_window = self.adapter(images_tensor)
-        # r_window = []
-        # for batch in ref_images:
-        #     sub_window = [self.adapter(x.unsqueeze(0)) for x in batch]
-        #     r_window.append(sub_window)
-
+        if self.adaptive_window:
+            images_tensor = torch.stack(images)
+            s1 = nn.Softmax(1)
+            n_prob = self.adapter(images_tensor)  if images_tensor.shape[2] == 512 else self.adapter(F.interpolate(images_tensor.unsqueeze(0),size=(512), mode='bilinear', align_corners=False))
+            n_prob = s1(n_prob)
+            fit_n_idx = torch.argmax(n_prob, -1)
+            n_window = [self.windows[x] for x in fit_n_idx]
+            r_window = []
+            for batch in ref_images:
+                sub_prob = [self.adapter(x.unsqueeze(0)) for x in batch] if batch[0].shape[1] == 512 else [self.adapter(F.interpolate(x.unsqueeze(0),size=(512), mode='bilinear', align_corners=False)) for x in batch]
+                sub_prob = [s1(x) for x in sub_prob]
+                sub_window = [self.windows[torch.argmax(x)] for x in sub_prob]
+                r_window.append(sub_window)
             
-        # batch_num = len(batched_inputs)
-        # ref_nums = [len(x['ref_image']) for x in batched_inputs]
+            images, ref_images = self.window_adjust(n_window, r_window, images_tensor, ref_images)
+
+                
         images = ImageList.from_tensors(images, self.size_divisibility)
         ref_images = [ImageList.from_tensors(x, self.size_divisibility) for x in ref_images]
 
@@ -745,6 +755,14 @@ class LesionDiffusionDet(nn.Module):
         images_whwh = torch.stack(images_whwh)
 
         return images, ref_images, images_whwh
+    
+    def visualization(self,img):
+        import cv2
+        import numpy as np
+        from matplotlib import pyplot as plt
+        test_img_save_path = './datasets/test_save/test.png'
+        img = img.cpu().detach().numpy().transpose(1, 2, 0)
+        cv2.imwrite(test_img_save_path,img)
     
     def test_visualization(self):
         import cv2
@@ -771,3 +789,45 @@ class LesionDiffusionDet(nn.Module):
             plt.imshow(v[channel, :, :])
         plt.show()
         print()
+
+    def cut_window(self, img, min, max):
+        thr_img = torch.zeros_like(img)
+        c, x, y = img.shape
+        # self.visualization(img)
+        img = self.antinormalizer(img)
+        for i in range(c):
+            c_max, c_min = torch.max(img[i]), torch.min(img[i])
+            scale_factor = c_max/(max-min)
+        #     for j in range(x):
+        #         for k in range(y):
+        #             thr_img[i,j,k] = torch.min(c_max, (img[i,j,k]-min)/(max-min)*c_max)
+            thr_img[i] = torch.clip(img[i], min, max)
+            thr_img[i] = (thr_img[i] - min) / (max - min)
+            thr_img[i] = thr_img[i] * (c_max + c_min) + c_min
+        # self.visualization(thr_img)
+        thr_img = self.normalizer(thr_img)
+        return thr_img
+
+
+    def window_adjust(self, n_window, r_window, images, ref_images):
+        '''
+        调整图像的窗宽与窗位👽👽👽☑️☑️☑️✔️✅❎💹
+        '''
+        b, r = len(r_window), len(r_window[0])
+        new_images = []
+        new_ref = []
+        for i in range(b):
+            [n_min, n_max] = n_window[i]
+            tmp_window = torch.tensor([[0, 0]]).to(self.device)
+            # tmp_window = [0, 0]
+            for j in range(r):
+                tmp_window += torch.tensor(r_window[i][j]).to(self.device)
+            [r_min, r_max] = tmp_window[0]/r
+            w_min, w_max = (n_min+r_min)/2, (n_max+r_max)/2
+            image = self.cut_window(images[i], w_min, w_max)
+            sub_new_ref = [self.cut_window(x, w_min, w_max) for x in ref_images[i]]
+            # self.visualization(self.antinormalizer(image))
+            new_images.append(image)
+            new_ref.append(sub_new_ref)
+        # new_images = torch.stack(new_images)
+        return new_images, new_ref

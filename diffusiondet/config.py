@@ -27,6 +27,7 @@ def add_diffusiondet_config(cfg):
     cfg.MODEL.DiffusionDet.IN_CH = 256
     cfg.MODEL.DiffusionDet.OUT_CH = 256
     cfg.MODEL.DiffusionDet.ADAPTIVE_WINDOW = False
+    cfg.MODEL.DiffusionDet.WINDOWS = ([-175, 275], [-1500, 500], [-1400, 200])
 
     # RCNN Head.
     cfg.MODEL.DiffusionDet.NHEADS = 8

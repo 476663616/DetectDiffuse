@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2024-03-19 09:05:43
+# Last Modified: 2024-03-26 15:53:44
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
@@ -565,6 +565,7 @@ class LesionDatasetMapper:
 
         self.img_format = cfg.INPUT.FORMAT
         self.is_train = is_train
+        self.ref_num = cfg.MODEL.DiffusionDet.REF_NUM
 
     def __call__(self, dataset_dict):
         """
@@ -586,19 +587,29 @@ class LesionDatasetMapper:
         # print(cur_img_idx-2, cur_img_idx+3, len(all_img))
         # try:
         #TODO:改为自适应的程序
-        if len(all_img) >= 5:
-            if cur_img_idx >= 2 and cur_img_idx <= len(all_img) - 3:
-                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(cur_img_idx-2, cur_img_idx+3) if i != cur_img_idx]
-            elif cur_img_idx <2:
-                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, 5) if i != cur_img_idx]
+        if len(all_img) >= self.ref_num+1:
+            if cur_img_idx >= int(self.ref_num/2) and cur_img_idx <= len(all_img) - int(self.ref_num/2+1):
+                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(cur_img_idx-int(self.ref_num/2), cur_img_idx+int(self.ref_num/2+1)) if i != cur_img_idx]
+            elif cur_img_idx <self.ref_num/2:
+                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, self.ref_num+1) if i != cur_img_idx]
             else:
-                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(len(all_img)-5, len(all_img)) if i != cur_img_idx]
+                ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(len(all_img)-(self.ref_num+1), len(all_img)) if i != cur_img_idx]
         else:
-            ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, len(all_img)) if i != cur_img_idx]
+            ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, len(all_img)) if i != cur_img_idx]#当前序列总帧数小于设定的参考帧数
+        # if len(all_img) >= 5:
+        #     if cur_img_idx >= 2 and cur_img_idx <= len(all_img) - 3:
+        #         ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(cur_img_idx-2, cur_img_idx+3) if i != cur_img_idx]
+        #     elif cur_img_idx <2:
+        #         ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, 5) if i != cur_img_idx]
+        #     else:
+        #         ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(len(all_img)-5, len(all_img)) if i != cur_img_idx]
+        # else:
+        #     ref_img = [utils.read_image(img_path+all_img[i], format=self.img_format) for i in range(0, len(all_img)) if i != cur_img_idx]
         # except:
         #     print()
-        if len(ref_img) != 4:
-            for i in range(0, 4-len(ref_img)):
+        if len(ref_img) != self.ref_num:
+
+            for i in range(0, self.ref_num-len(ref_img)):
                 ref_img.append(image)
         utils.check_image_size(dataset_dict, image)
 

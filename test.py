@@ -216,7 +216,7 @@ def show_img(results, gts, save_root):
             cv2.imwrite(save_root+image_name, img)
 
 def  show_img_contrast(results, gts, save_root):
-    image_root = './datasets/8bit/testset/image/'
+    image_root = '/home/xinyul/python_exercises/data/lesions/COVID_coco/images/'
     for result in results:
         img_id = result['image_id']
         image_name = gts.loadImgs(img_id)[0]['file_name']
@@ -286,12 +286,12 @@ def gt_vis(gt, save_root):
         cv2.imwrite(save_root+image_name, img_arr)
 
 if __name__ == '__main__':
-    pred_path = './output/diffusionDet_8bit_119999/inference/instances_predictions.pth'
+    pred_path = './output/diffusionDet_8bit_ela_6/test_lnq/inference/instances_predictions.pth'
     # pred_path = './post_result/0711R50_4Step_uniform_buffer_500box/test_post.pth'
     # pred_path = './test_post.pth'
-    data_root = './datasets/8bit/testset/image/'
-    gt_root = './datasets/testset/annotation/annotation.json'
-    save_root = './output/diffusionDet_8bit_119999/img_gt/'
+    data_root = '/home/xinyul/python_exercises/data/lesions/COVID_coco/images/'
+    gt_root = "/home/xinyul/python_exercises/data/lesions/COVID_coco/annotation.json"
+    save_root = './output/diffusionDet_8bit_ela_6/test_lnq/inference/img_test/'
     if not os.path.exists(save_root):
         os.makedirs(save_root)
     result = torch.load(pred_path)
@@ -302,7 +302,7 @@ if __name__ == '__main__':
     # filename_series=[]
     for i in range(0,len(imgs)):
         filename.append(imgs[i]['file_name'][:-4])
-    result = prepocess(result, thr=0.5)
+    result = prepocess(result, thr=0.01)
     final_eva=[]
     # final_eva_series=[]
     final_eva.append(filename)

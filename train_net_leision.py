@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2024-01-18 18:07:19
+# Last Modified: 2024-10-21 11:05:20
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
@@ -22,14 +22,13 @@ This script is a simplified version of the training script in detectron2/tools.
 
 import argparse
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import itertools
 import sys
 import weakref
 from typing import Any, Dict, List, Set
 import logging
 from collections import OrderedDict
-
 import tensorboardX
 
 import torch
@@ -303,7 +302,7 @@ class Lesion_trainer(DefaultTrainer):
             **kwargs,
             # trainer=weakref.proxy(self),
         )
-        self.start_iter = 0
+        self.start_iter = 450000
         self.max_iter = cfg.SOLVER.MAX_ITER
         self.cfg = cfg
 
@@ -348,6 +347,7 @@ class Lesion_trainer(DefaultTrainer):
     @classmethod
     def build_lesion_test_loader(cls, cfg, dataset_name):
         mapper = LesionDatasetMapper(cfg, is_train=False)
+        # return build_lesion_test_loader(cfg, dataset_name, mapper=mapper, batch_size=12)
         return build_lesion_test_loader(cfg, dataset_name, mapper=mapper)
 
     @classmethod
@@ -428,6 +428,62 @@ class Lesion_trainer(DefaultTrainer):
             res = cls.test(cfg, model, evaluators)
         res = OrderedDict({k + "_TTA": v for k, v in res.items()})
         return res
+    
+    @classmethod
+    def test(cls, cfg, model, evaluators=None):
+        """
+        Evaluate the given model. The given model is expected to already contain
+        weights to evaluate.
+
+        Args:
+            cfg (CfgNode):
+            model (nn.Module):
+            evaluators (list[DatasetEvaluator] or None): if None, will call
+                :meth:`build_evaluator`. Otherwise, must have the same length as
+                ``cfg.DATASETS.TEST``.
+
+        Returns:
+            dict: a dict of result metrics
+        """
+        logger = logging.getLogger(__name__)
+        if isinstance(evaluators, DatasetEvaluator):
+            evaluators = [evaluators]
+        if evaluators is not None:
+            assert len(cfg.DATASETS.TEST) == len(evaluators), "{} != {}".format(
+                len(cfg.DATASETS.TEST), len(evaluators)
+            )
+
+        results = OrderedDict()
+        for idx, dataset_name in enumerate(cfg.DATASETS.TEST):
+            data_loader = cls.build_lesion_test_loader(cfg, dataset_name)
+            # When evaluators are passed in as arguments,
+            # implicitly assume that evaluators can be created before data_loader.
+            if evaluators is not None:
+                evaluator = evaluators[idx]
+            else:
+                try:
+                    evaluator = cls.build_evaluator(cfg, dataset_name)
+                except NotImplementedError:
+                    logger.warn(
+                        "No evaluator found. Use `DefaultTrainer.test(evaluators=)`, "
+                        "or implement its `build_evaluator` method."
+                    )
+                    results[dataset_name] = {}
+                    continue
+            results_i = inference_on_dataset(model, data_loader, evaluator)
+            results[dataset_name] = results_i
+            if comm.is_main_process():
+                assert isinstance(
+                    results_i, dict
+                ), "Evaluator must return a dict on the main process. Got {} instead.".format(
+                    results_i
+                )
+                logger.info("Evaluation results for {} in csv format:".format(dataset_name))
+                print_csv_format(results_i)
+
+        if len(results) == 1:
+            results = list(results.values())[0]
+        return results
 
     def build_hooks(self):
         """

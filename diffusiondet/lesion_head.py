@@ -6,7 +6,7 @@
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2024-03-21 22:02:48
+# Last Modified: 2024-10-10 23:23:55
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
@@ -192,6 +192,11 @@ class MultiImg_RCNNHead(nn.Module):
         self.pre_fusion = GALayer(cfg)
         self.layer_attention = ELA_Layer(cfg)
 
+        #####ablation#####
+        self.conv_3d = nn.Conv3d(cfg.MODEL.DiffusionDet.IN_CH, cfg.MODEL.DiffusionDet.OUT_CH, kernel_size=3,padding=1,stride=1)
+        self.channel_attention = channel_attention(cfg)
+        self.dense_block = Dense_block(cfg)
+
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
@@ -267,6 +272,15 @@ class MultiImg_RCNNHead(nn.Module):
             roi_refs.append(pooler(sub_rois, proposal_boxes)) #[500*9, C, 7, 7]
         
         roi_features = self.ela_enhanced(roi_features, roi_refs)
+
+        #################Ablation###############
+        # roi_features = self.c3_enhanced(roi_features, roi_refs)
+        # roi_features = self.ca_enhanced(roi_features, roi_refs)
+        # refs =torch.stack(roi_refs)
+        # all_rois = torch.cat([roi_features.unsqueeze(0), refs]).permute(1,2,0,3,4)
+        # all_rois = rearrange(all_rois, 'B C H W D -> B (C H) W D')
+        # roi_features = self.dense_block(all_rois)
+        # roi_features = rearrange(roi_features, 'B (C H) W D -> H B C W D',H=5)[0]
 
         if pro_features is None:
             pro_features = roi_features.view(N, nr_boxes, self.d_model, -1).mean(-1) #[500*9, C, 7, 7] --> [9, 500, 256, 49] --> [9, 500, 256]
@@ -481,7 +495,21 @@ class MultiImg_RCNNHead(nn.Module):
         all_rois = torch.cat([ori.unsqueeze(0), refs]).permute(1,2,0,3,4)
         enhanced_rois = self.layer_attention(all_rois).permute(2,0,1,3,4)
         return enhanced_rois[0]
-
+    
+    def c3_enhanced(self, ori, refs):
+        refs =torch.stack(refs)
+        all_rois = torch.cat([ori.unsqueeze(0), refs]).permute(1,2,0,3,4)
+        enhanced_rois = self.conv_3d(all_rois).permute(2,0,1,3,4)
+        return enhanced_rois[0]
+    
+    def ca_enhanced(self, ori, refs):
+        refs =torch.stack(refs)
+        all_rois = torch.cat([ori.unsqueeze(0), refs]).permute(1,2,0,3,4)
+        B,C,H,W,D = all_rois.shape
+        all_rois = rearrange(all_rois, 'B C H W D -> B (C H) W D')
+        enhanced_rois = self.channel_attention(all_rois)
+        enhanced_rois = rearrange(enhanced_rois, 'B (C H) W D -> H B C W D',H=H)
+        return enhanced_rois[0]
     
 
 
@@ -558,6 +586,49 @@ class GALayer(nn.Module):
         x1 = x1 * self.ca(x1)
         x1 = x1 * self.pa(x1)
         return x + x1
+    
+class channel_attention(nn.Module):
+    def __init__(self, cfg):
+        super(channel_attention, self).__init__()
+        self.channel = int(cfg.MODEL.DiffusionDet.IN_CH *5)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.ca = nn.Sequential(
+                nn.Conv2d(self.channel, self.channel // 8, 1, padding=0, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(self.channel // 8, self.channel, 1, padding=0, bias=True),
+                nn.Sigmoid()
+        )
+    def forward(self, x):
+        x1 = self.avg_pool(x)
+        x1 = x1 * self.ca(x1)
+        return x + x1
+    
+class Dense_block(nn.Sequential):
+    """Basic unit of DenseBlock (using bottleneck layer) """
+    def __init__(self, cfg):
+        super(Dense_block, self).__init__()
+        num_input_features = int(cfg.MODEL.DiffusionDet.IN_CH *5)
+        num_output_features = int(cfg.MODEL.DiffusionDet.OUT_CH *5)
+        self.add_module("norm1", nn.BatchNorm2d(num_input_features))
+        self.add_module("relu1", nn.ReLU(inplace=True))
+        self.add_module("conv1", nn.Conv2d(num_input_features, num_output_features,
+                                           kernel_size=3, stride=1, padding=1, bias=False))
+        self.add_module("norm2", nn.BatchNorm2d(num_output_features))
+        self.add_module("relu2", nn.ReLU(inplace=True))
+        self.add_module("conv2", nn.Conv2d(num_output_features, num_output_features,
+                                           kernel_size=3, stride=1, padding=1, bias=False))
+        self.drop_rate = 0
+
+    def forward(self, x):
+        new_features = super(Dense_block, self).forward(x)
+        if self.drop_rate > 0:
+            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+        #通过torch.cat操作将前面的数据合并在一起 
+        #类似如:第一次操作：[x, features] 
+        #      第二次操作：[x, features_1] 其中，此时的x为[x, features] 
+        return x + new_features
+
+    
 
 
 def _get_clones(module, N):
@@ -648,7 +719,7 @@ class con_block(nn.Module):
         return x    
 
 class Window_Layer(nn.Module):
-    def __init__(self, img_ch=3, out_ch=2):
+    def __init__(self, img_ch=3, out_ch=9):
         super(Window_Layer, self).__init__()
         n1 = 32
         filters = [n1, n1 * 2, n1 * 4, n1 * 8]
@@ -659,6 +730,7 @@ class Window_Layer(nn.Module):
         self.fc1 = nn.Linear(filters[3]*2, filters[2])
         self.fc2 = nn.Linear(filters[2], filters[0])
         self.fc3 = nn.Linear(filters[0], out_ch)
+        # self.fc2 = nn.Linear(filters[2], out_ch)
         self.Maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.Maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.Maxpool3 = nn.MaxPool2d(kernel_size=2, stride=4)
