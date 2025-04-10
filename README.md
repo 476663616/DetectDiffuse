@@ -24,12 +24,12 @@ Steps
 3. install Requirements: `pip install -r requirements.txt`
 4. Datasets' links:
 
-   deeplesion dataset: https://nihcc.app.box.com/v/DeepLesion
-   BraTS2021 dataset: https://www.kaggle.com/datasets/dschettler8845/brats-2021-task1
-   Task08 dataset: https://www.kaggle.com/datasets/oldyan/task08-hepaticvessel?select=imagesTr
-   Covid-19-20 dataset: https://covid-segmentation.grand-challenge.org/Download/
-   LNQ2023 dataset: https://lnq2023.grand-challenge.org/
-   LiTS dataset: https://drive.google.com/drive/folders/0B0vscETPGI1-Q1h1WFdEM2FHSUE?resourcekey=0-XIVV_7YUjB9TPTQ3NfM17A
+deeplesion dataset: https://nihcc.app.box.com/v/DeepLesion
+BraTS2021 dataset: https://www.kaggle.com/datasets/dschettler8845/brats-2021-task1
+Task08 dataset: https://www.kaggle.com/datasets/oldyan/task08-hepaticvessel?select=imagesTr
+Covid-19-20 dataset: https://covid-segmentation.grand-challenge.org/Download/
+LNQ2023 dataset: https://lnq2023.grand-challenge.org/
+LiTS dataset: https://drive.google.com/drive/folders/0B0vscETPGI1-Q1h1WFdEM2FHSUE?resourcekey=0-XIVV_7YUjB9TPTQ3NfM17A
 
 ```
 for the dataset end with "*.nii.gz/*.nii", 
