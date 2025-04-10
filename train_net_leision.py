@@ -1,24 +1,16 @@
 # -*- coding:utf-8 -*-
 ###
-# File: /home/xinyul/python_exercises/3D_diffusuionDet/train_net copy.py
-# Project: /home/xinyul/python_exercises/3D_diffusuionDet
 # Created Date: Tuesday, November 7th 2023, 10:18:11 pm
 # Author: Xinyu Li
 # Email: 3120235098@bit.edu.cn
 # -----
-# Last Modified: 2024-10-21 11:05:20
+# Last Modified: 2025-04-10 21:30:30
 # Modified By: Xinyu Li
 # -----
 # Copyright (c) 2023 Beijing Institude of Technology.
 # ------------------------------------
 # 请你获得幸福！！！
 ###
-
-"""
-DiffusionDet Training Script.
-
-This script is a simplified version of the training script in detectron2/tools.
-"""
 
 import argparse
 import os

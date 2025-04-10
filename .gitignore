@@ -43,7 +43,14 @@ _darcs
 
 # project dirs
 /detectron2/model_zoo/configs
-/datasets/*
+/datasets
 !/datasets/*.*
 /projects/*/datasets
 
+/test_img
+/configs/diffdet.coco.res101*
+/configs/diffdet.coco.swin*
+/configs/diffdet.lvis*
+/configs/*copy*
+/configs/*300*
+/configs/*Lesion*

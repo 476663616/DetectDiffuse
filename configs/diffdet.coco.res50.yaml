@@ -11,8 +11,8 @@
 
 _BASE_: "Base-DiffusionDet.yaml"
 MODEL:
-  # WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
-  WEIGHTS: "./output/diffusionDet_8bit_ela_6/model_0449999.pth"
+  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
+  # WEIGHTS: "./output/diffusionDet_8bit_ela_6/model_0449999.pth"
   RESNETS:
     DEPTH: 50
     STRIDE_IN_1X1: False

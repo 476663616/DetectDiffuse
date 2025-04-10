@@ -1,47 +1,83 @@
-## DiffusionDet: Diffusion Model for Object Detection
+# DetectDifuse: Adaptive Aggregation Quantum Difusion Model for Universal Lesion Detection
 
-**DiffusionDet is the first work of diffusion model for object detection.**
+**DetectDifuse is an framework of quantum  diffusion model for universal lesion detection.**
 
-![](teaser.png)
-
-
-> [**DiffusionDet: Diffusion Model for Object Detection**](https://arxiv.org/abs/2211.09788)               
-> [Shoufa Chen](https://www.shoufachen.com/), [Peize Sun](https://peizesun.github.io/), [Yibing Song](https://ybsong00.github.io/), [Ping Luo](http://luoping.me/)                 
-> *[arXiv 2211.09788](https://arxiv.org/abs/2211.09788)* 
-
-## Updates
-- (11/2022) Code is released.
-
-## Models
-Method | Box AP (1 step) | Box AP (4 step) | Download
---- |:---:|:---:|:---:
-[COCO-Res50](configs/diffdet.coco.res50.yaml) | 45.5 | 46.1 | [model](https://github.com/ShoufaChen/DiffusionDet/releases/download/v0.1/diffdet_coco_res50.pth)
-[COCO-Res101](configs/diffdet.coco.res101.yaml) | 46.6 | 46.9 | [model](https://github.com/ShoufaChen/DiffusionDet/releases/download/v0.1/diffdet_coco_res101.pth)
-[COCO-SwinBase](configs/diffdet.coco.swinbase.yaml) | 52.3 | 52.7 | [model](https://github.com/ShoufaChen/DiffusionDet/releases/download/v0.1/diffdet_coco_swinbase.pth)
-[LVIS-Res50](configs/diffdet.lvis.res50.yaml) | 30.4 | 31.8 | [model](https://github.com/ShoufaChen/DiffusionDet/releases/download/v0.1/diffdet_lvis_res50.pth)
-[LVIS-Res101](configs/diffdet.lvis.res101.yaml) | 31.9 | 32.9 | [model](https://github.com/ShoufaChen/DiffusionDet/releases/download/v0.1/diffdet_lvis_res101.pth)
-[LVIS-SwinBase](configs/diffdet.lvis.swinbase.yaml) | 40.6 | 41.9 | [model](https://github.com/ShoufaChen/DiffusionDet/releases/download/v0.1/diffdet_lvis_swinbase.pth)
-
+![img](overview.jpg)
 
 ## Getting Started
 
-The installation instruction and usage are in [Getting Started with DiffusionDet](GETTING_STARTED.md).
+#### Installation
 
+###### Requirements
+
+- Linux or macOS with Python ≥ 3.6
+- PyTorch ≥ 1.9.0 and [torchvision](https://github.com/pytorch/vision/) that matches the PyTorch installation.
+  You can install them together at [pytorch.org](https://pytorch.org) to make sure of this
+- OpenCV is optional and needed by demo and visualization
+- More requirements can be found in requirements.txt.
+- These should install in about 10 mins.
+
+Steps
+
+1. Install Detectron2 following https://github.com/facebookresearch/detectron2/blob/main/INSTALL.md#installation.
+2. Prepare datasets and  link it to detectron2.
+3. install Requirements: `pip install -r requirements.txt`
+4. Datasets' links:
+
+   deeplesion dataset: https://nihcc.app.box.com/v/DeepLesion
+   BraTS2021 dataset: https://www.kaggle.com/datasets/dschettler8845/brats-2021-task1
+   Task08 dataset: https://www.kaggle.com/datasets/oldyan/task08-hepaticvessel?select=imagesTr
+   Covid-19-20 dataset: https://covid-segmentation.grand-challenge.org/Download/
+   LNQ2023 dataset: https://lnq2023.grand-challenge.org/
+   LiTS dataset: https://drive.google.com/drive/folders/0B0vscETPGI1-Q1h1WFdEM2FHSUE?resourcekey=0-XIVV_7YUjB9TPTQ3NfM17A
+
+```
+for the dataset end with "*.nii.gz/*.nii", 
+python dataset_process/nii2coco.py
+
+for the other end with "*.nrrd",
+python dataset_process/nrrd2coco.py
+
+mkdir -p datasets/trainset
+...
+
+ln -s /path_to_dataset/annotation datasets/trainset/annotation
+ln -s /path_to_dataset/image datasets/trainset/image
+...
+```
+
+## Train
+
+Please use the config file in configs/diffdet.coco.res50.yaml and customize your parameters!
+
+Train instruction:
+
+```
+python train_net_lesion.py --config-file configs/diffdet.coco.res50.yaml
+```
+
+Training duration depends on equipment performance and is typically completed within a week.
+
+## Inference
+
+Please modificate the `"MODEL-WEIGHTS"` in congfig to your model path.
+
+Inference instruction:
+
+```
+python train_net_lesion.py --config-file configs/diffdet.coco.res50.yaml --eval-only True
+```
+
+Training duration depends on equipment performance and is typically completed within several hours.
+
+After inference, a `.pkl` file  and a `.json` file of the result will be generated in the output folder which you set in the config file.
+
+## Visualization and evaluation
+
+`python test.py`
+
+After run the code, the visualization results will generated in the output folder which you set in the code, and the evaluation result will  be printed in the terminal.
 
 ## License
 
 This project is under the CC-BY-NC 4.0 license. See [LICENSE](LICENSE) for details.
-
-
-## Citing DiffusionDet
-
-If you use DiffusionDet in your research or wish to refer to the baseline results published here, please use the following BibTeX entry.
-
-```BibTeX
-@article{chen2022diffusiondet,
-      title={DiffusionDet: Diffusion Model for Object Detection},
-      author={Chen, Shoufa and Sun, Peize and Song, Yibing and Luo, Ping},
-      journal={arXiv preprint arXiv:2211.09788},
-      year={2022}
-}
-```
