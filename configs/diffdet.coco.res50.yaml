@@ -22,7 +22,7 @@ MODEL:
     IS_LESION: True
     NOISE: 'normal'
     REF_NUM: 4
-    ADAPTIVE_WINDOW: False
+    ADAPTIVE_WINDOW: True
     # ADAPTIVE_WINDOW: False
 DATASETS:
   TRAIN: ("lesion_all_train",)
