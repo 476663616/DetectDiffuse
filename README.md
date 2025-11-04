@@ -86,3 +86,10 @@ After run the code, the visualization results will generated in the output folde
 ## License
 
 This project is under the CC-BY-NC 4.0 license. See [LICENSE](LICENSE) for details.
+
+## Acknowledgments
+This project builds upon multiple open-source frameworks and prior research. We extend our sincere gratitude to the following works:
+
+DiffusionDet (Chen et al., ICCV 2023): The diffusion detection module of this project references the core architecture and training strategy of DiffusionDet. We adapted it for medical images and extended it with quantum noise modeling. Original project URL: [https://github.com/ShoufaChen/DiffusionDet](https://github.com/ShoufaChen/DiffusionDet)
+
+DeepLesion Dataset (Yan et al., MICCAI 2018): This project utilizes the DeepLesion dataset as the primary training and evaluation data source. We thank the original authors for providing high-quality, publicly available medical imaging resources.
